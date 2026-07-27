@@ -141,6 +141,13 @@ jobs:
             cat "${MATRIX_PROPERTY}results.json" >> "${GITHUB_OUTPUT}"
             echo "${DELIMITER}" >> "${GITHUB_OUTPUT}"
           fi
+      - name: "Upload native JSON results"
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: osv-results.json          # ← the literal Cerberus's policy matches on
+          path: ${{ inputs.matrix-property }}results.json
+          retention-days: 5
       # Upload the results as artifacts (optional). Commenting out will disable uploads of run results in SARIF
       # format to the repository Actions tab.
       - name: "Upload artifact"
