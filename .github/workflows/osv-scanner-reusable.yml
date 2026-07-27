@@ -98,19 +98,13 @@ jobs:
             --new=${{ inputs.matrix-property }}results.json
             --gh-annotations=false
             --fail-on-vuln=${{ inputs.fail-on-vuln }}
-      # Exports the results as a JSON string in an environment
-      # variable. Uses a heredoc with a random 16-character delimiter
-      # to avoid interference between the JSON content and the
-      # environment variable.
-      - name: "Export results"
-        id: export
-        run: |
-          if [ -f ${{ inputs.matrix-property }}osv-results.json ]; then
-            DELIMITER="EOF_$(tr -dc 'a-zA-Z0-9' < /dev/urandom 2>/dev/null | head -c 16)"
-            echo "results<<${DELIMITER}" >> "${GITHUB_OUTPUT}"
-            cat ${{ inputs.matrix-property }}osv-results.json >> "${GITHUB_OUTPUT}"
-            echo "${DELIMITER}" >> "${GITHUB_OUTPUT}"
-          fi
+      - name: "Upload native JSON results"
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: osv-results.json          # ← the literal Cerberus's policy matches on
+          path: ${{ inputs.matrix-property }}results.json
+          retention-days: 5
       # Upload the results as artifacts (optional). Commenting out will disable uploads of run results in SARIF
       # format to the repository Actions tab.
       - name: "Upload artifact"
