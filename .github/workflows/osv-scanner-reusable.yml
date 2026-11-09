@@ -61,7 +61,7 @@ on:
         type: boolean
         default: false
       go-private-modules:
-        description: "GOPRIVATE pattern of private Go modules govulncheck may fetch with GO_PRIVATE_MODULES_TOKEN (E.g. 'github.com/my-org/*'). Empty: none"
+        description: "GOPRIVATE pattern of private Go modules govulncheck may fetch with the OSV_SCANNER_APP_* GitHub App token (E.g. 'github.com/my-org/*'). Empty: none"
         type: string
         default: ""
       runs-on:
@@ -69,8 +69,11 @@ on:
         type: string
         default: "ubuntu-latest"
     secrets:
-      GO_PRIVATE_MODULES_TOKEN:
-        description: "Optional token with read access to the private modules matched by go-private-modules. It is handed to git in the scanner container through GIT_CONFIG_* env only. When empty or absent, call analysis of private modules fails as before and the scan falls back to the go.mod package list"
+      OSV_SCANNER_APP_CLIENT_ID:
+        description: "Optional client ID of a GitHub App installed on the repositories of the private modules matched by go-private-modules. With OSV_SCANNER_APP_PRIVATE_KEY, the job mints a contents:read installation token and hands it to git in the scanner container through GIT_CONFIG_* env only. When either is empty or absent, call analysis of private modules fails as before and the scan falls back to the go.mod package list"
+        required: false
+      OSV_SCANNER_APP_PRIVATE_KEY:
+        description: "Optional private key (PEM) of the GitHub App named by OSV_SCANNER_APP_CLIENT_ID"
         required: false
     outputs:
       results:
@@ -87,6 +90,10 @@ jobs:
       security-events: write
     outputs:
       results: ${{ steps.export.outputs.results }}
+    env:
+      # The secrets context is not available in step `if:` conditions, so the
+      # token step below keys off this instead.
+      OSV_SCANNER_APP_CONFIGURED: ${{ secrets.OSV_SCANNER_APP_CLIENT_ID != '' && secrets.OSV_SCANNER_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -99,9 +106,28 @@ jobs:
         with:
           name: "${{ inputs.download-artifact }}"
           path: "./"
+      - name: "Mint read-only token for private Go modules"
+        id: "go-modules-token"
+        # Only when there are private modules to fetch: otherwise the token would
+        # reach the scanner container for nothing.
+        if: ${{ env.OSV_SCANNER_APP_CONFIGURED == 'true' && inputs.go-private-modules != '' }}
+        # A failure here (e.g. app not installed, key rotated) leaves the step red
+        # but lets the scan run without the token, i.e. the go.mod fallback,
+        # rather than failing every consumer's scan on an app misconfiguration.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.OSV_SCANNER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OSV_SCANNER_APP_PRIVATE_KEY }}
+          # Every repository the app installation can see, not just this one.
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+      - name: "Warn when the private Go modules token could not be minted"
+        if: ${{ steps.go-modules-token.outcome == 'failure' }}
+        run: echo "::warning::Could not mint the OSV_SCANNER_APP_* GitHub App token; govulncheck call analysis of private modules falls back to the go.mod package list"
       - name: "Run scanner"
         id: "scan"
-        # The scanner container receives GO_PRIVATE_MODULES_TOKEN, so its image is
+        # The scanner container receives a GitHub App token, so its image is
         # pinned by digest rather than through google/osv-scanner-action's
         # action.yml, which uses the mutable tag. Digest of
         # ghcr.io/google/osv-scanner-action:v2.7.0 (multi-arch index), resolved
@@ -116,8 +142,8 @@ jobs:
           # from GIT_CONFIG_* env (never a file or a command-line argument).
           # GIT_CONFIG_COUNT is 0 without a token, which keeps today's fallback.
           GOPRIVATE: ${{ inputs.go-private-modules }}
-          GIT_CONFIG_COUNT: ${{ secrets.GO_PRIVATE_MODULES_TOKEN != '' && '1' || '0' }}
-          GIT_CONFIG_KEY_0: ${{ secrets.GO_PRIVATE_MODULES_TOKEN != '' && format('url.https://x-access-token:{0}@github.com/.insteadOf', secrets.GO_PRIVATE_MODULES_TOKEN) || '' }}
+          GIT_CONFIG_COUNT: ${{ steps.go-modules-token.outputs.token != '' && '1' || '0' }}
+          GIT_CONFIG_KEY_0: ${{ steps.go-modules-token.outputs.token != '' && format('url.https://x-access-token:{0}@github.com/.insteadOf', steps.go-modules-token.outputs.token) || '' }}
           GIT_CONFIG_VALUE_0: https://github.com/
         with:
           args: |-
