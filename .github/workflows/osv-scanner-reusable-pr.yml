@@ -51,10 +51,18 @@ on:
         description: "Whether to export the scan results as job outputs (can fail for large repositories due to size limits)"
         type: boolean
         default: false
+      go-private-modules:
+        description: "GOPRIVATE pattern of private Go modules govulncheck may fetch with GO_PRIVATE_MODULES_TOKEN (E.g. 'github.com/my-org/*'). Empty: none"
+        type: string
+        default: ""
       runs-on:
         description: "The runner to use for the scan job (E.g. 'ubuntu-latest', 'ubuntu-24.04', or a self-hosted runner label)"
         type: string
         default: "ubuntu-latest"
+    secrets:
+      GO_PRIVATE_MODULES_TOKEN:
+        description: "Optional token with read access to the private modules matched by go-private-modules. It is handed to git in the scanner container through GIT_CONFIG_* env only. When empty or absent, call analysis of private modules fails as before and the scan falls back to the go.mod package list"
+        required: false
     outputs:
       old-results:
         description: "Results of the scan before the PR in JSON format"
@@ -86,12 +94,27 @@ jobs:
           git submodule update --recursive
       - name: "Run scanner on existing code"
         id: "scan-old"
-        uses: google/osv-scanner-action/osv-scanner-action@0a65f82af05cd58cf587827b0bb0489548c18346 # v2.7.0
+        # The scanner container receives GO_PRIVATE_MODULES_TOKEN, so its image is
+        # pinned by digest rather than through google/osv-scanner-action's
+        # action.yml, which uses the mutable tag. Digest of
+        # ghcr.io/google/osv-scanner-action:v2.7.0 (multi-arch index), resolved
+        # 2026-11-09. Bump it together with the reporter action's version.
+        # The action's entrypoint splits its last argument on whitespace, so
+        # passing the scan args as `args` gives osv-scanner the same arguments.
+        uses: docker://ghcr.io/google/osv-scanner-action@sha256:d54770fe0b09493894e76a02aaed9f51a0513fa57c5186452a755d257b0068a6
         env:
           GOTOOLCHAIN: auto
+          # Private Go modules for govulncheck call analysis: GOPRIVATE makes Go
+          # fetch them directly, and git gets the token as an insteadOf rewrite
+          # from GIT_CONFIG_* env (never a file or a command-line argument).
+          # GIT_CONFIG_COUNT is 0 without a token, which keeps today's fallback.
+          GOPRIVATE: ${{ inputs.go-private-modules }}
+          GIT_CONFIG_COUNT: ${{ secrets.GO_PRIVATE_MODULES_TOKEN != '' && '1' || '0' }}
+          GIT_CONFIG_KEY_0: ${{ secrets.GO_PRIVATE_MODULES_TOKEN != '' && format('url.https://x-access-token:{0}@github.com/.insteadOf', secrets.GO_PRIVATE_MODULES_TOKEN) || '' }}
+          GIT_CONFIG_VALUE_0: https://github.com/
         continue-on-error: true
         with:
-          scan-args: |-
+          args: |-
             --format=json
             --output=${{ inputs.matrix-property }}old-results.json
             ${{ inputs.scan-args }}
@@ -102,11 +125,26 @@ jobs:
           git submodule update --recursive
       - name: "Run scanner on new code"
         id: "scan-new"
-        uses: google/osv-scanner-action/osv-scanner-action@0a65f82af05cd58cf587827b0bb0489548c18346 # v2.7.0
+        # The scanner container receives GO_PRIVATE_MODULES_TOKEN, so its image is
+        # pinned by digest rather than through google/osv-scanner-action's
+        # action.yml, which uses the mutable tag. Digest of
+        # ghcr.io/google/osv-scanner-action:v2.7.0 (multi-arch index), resolved
+        # 2026-11-09. Bump it together with the reporter action's version.
+        # The action's entrypoint splits its last argument on whitespace, so
+        # passing the scan args as `args` gives osv-scanner the same arguments.
+        uses: docker://ghcr.io/google/osv-scanner-action@sha256:d54770fe0b09493894e76a02aaed9f51a0513fa57c5186452a755d257b0068a6
         env:
           GOTOOLCHAIN: auto
+          # Private Go modules for govulncheck call analysis: GOPRIVATE makes Go
+          # fetch them directly, and git gets the token as an insteadOf rewrite
+          # from GIT_CONFIG_* env (never a file or a command-line argument).
+          # GIT_CONFIG_COUNT is 0 without a token, which keeps today's fallback.
+          GOPRIVATE: ${{ inputs.go-private-modules }}
+          GIT_CONFIG_COUNT: ${{ secrets.GO_PRIVATE_MODULES_TOKEN != '' && '1' || '0' }}
+          GIT_CONFIG_KEY_0: ${{ secrets.GO_PRIVATE_MODULES_TOKEN != '' && format('url.https://x-access-token:{0}@github.com/.insteadOf', secrets.GO_PRIVATE_MODULES_TOKEN) || '' }}
+          GIT_CONFIG_VALUE_0: https://github.com/
         with:
-          scan-args: |-
+          args: |-
             --format=json
             --output=${{ inputs.matrix-property }}new-results.json
             ${{ inputs.scan-args }}
